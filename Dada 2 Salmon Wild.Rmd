@@ -1,0 +1,234 @@
+---
+title: "Dada 2 Salmon Wild"
+author: "Karen"
+date: '2022-05-09'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+##Install packages
+```{r}
+library(dada2); packageVersion("dada2")
+```
+
+```{r}
+library(philentropy); packageVersion("philentropy")
+```
+```{r}
+library(DECIPHER); packageVersion("DECIPHER")
+```
+```{r}
+head(sessionInfo())
+```
+##Create blank variables
+```{r}
+# 
+x <- c(0.1:0.5)
+D <- matrix(x, nrow=18, ncol=1)
+trackRun <- matrix(x, nrow=6, ncol=1)
+rownames(D) <- c("try", "t1", "t2", "t3", "Rich", "G12", "H12", "GH", "NoChim", "M12", "BootClass", "BootGenus", "input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim" )
+# reset counters
+try <- c(0)
+M12 <- c(0)
+D
+```
+##Create path to folder with fastq pairs
+```{r}
+path <- "C:/Users/Karen/Documents/ProjectDada/fastqfiles/Salmon/Salmon Wild" 
+# CHANGE ME to the directory containing the fastq files after unzipping.
+list.files(path)
+```
+##Forward and reverse fastq filenames
+```{r}
+fnFs <- sort(list.files(path, pattern=".fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_1.fastq", full.names = TRUE))
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+## plot some quality profiles from forward
+plotQualityProfile(fnFs[1:2])
+```
+
+```{r}
+## and reverse
+plotQualityProfile(fnRs[1:2])
+```
+
+
+```{r}
+plotQualityProfile(fnRs[1:2])
+```
+
+## Place filtered files in filtered/ subdirectory
+```{r}
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+head(filtFs)
+```
+
+## Select range of parameters based on inspection of above quality plots and run optimization loop. Users should increase number in “(length(D) > 100).” Also, if not run on Windows, set multithread to TRUE.
+```{r}
+repeat{
+t1 <- (sample(100:150, 1))
+t2 <- (sample(100:150, 1))
+t3 <- (sample(5:20, 1))
+## count trys
+try <- try +1
+## standard filtering 
+# On Windows set multithread=FALSE
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, trimLeft=t3, truncLen=c(t1,t2),
+                     maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+                     compress=TRUE, multithread=FALSE) 
+head(out)
+## learn error rates
+errR <- learnErrors(filtRs, randomize = TRUE, multithread=FALSE, nbases = 1e8)
+errF <- learnErrors(filtFs, randomize = TRUE, multithread=FALSE, nbases = 1e8)
+plotErrors(errF, nominalQ=TRUE)
+## dereplication
+derepFs <- derepFastq(filtFs, verbose=TRUE)
+derepRs <- derepFastq(filtRs, verbose=TRUE)
+## Name the derep-class objects by the sample names
+names(derepFs) <- sample.names
+names(derepRs) <- sample.names
+## run the core sample inference program
+dadaFs <- dada(derepFs, err=errF, multithread=FALSE)
+dadaRs <- dada(derepRs, err=errR, multithread=FALSE)
+## insepct one
+dadaFs[[1]]
+## merge paired reads
+mergers <- mergePairs(dadaFs, derepFs, dadaRs, derepRs, verbose=TRUE)
+# Inspect the merger data.frame from the first sample
+head(mergers[[1]])
+## construct amplicon sequence variant table (ASV), an OTU table
+seqtab <- makeSequenceTable(mergers)
+dim(seqtab)
+## inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)))
+## remove non-target lengths 
+#seqtab2 <- seqtab[,nchar(colnames(seqtab)) %in% seq(250,254)]
+## table(nchar(getSequences(seqtab2)))
+## identify chimers
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=FALSE, verbose=TRUE)
+dim(seqtab.nochim)
+## define function getN
+getN <- function(x) sum(getUniques(x))
+## track reads through pipeline
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+# If processing a single sample, remove the sapply calls: e.g. replace sapply(dadaFs, getN) with getN(dadaFs)
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+## see how much data you have left
+head(track)
+trackRun <- as.matrix(colSums(track))
+## calculate Jaccard coefficients
+Rich <- ncol(seqtab.nochim)
+N <- seqtab.nochim
+N[N>0] <- 1
+N[is.na(N)] <- 0
+k <- philentropy::distance(N, method = "jaccard")
+# write.csv(k, "kSalW.csv", row.names = rownames(N))
+G12 <- 1-k[1,2]
+H12 <- 1-k[2,3]
+GH <- mean(G12, H12)
+NoChim <- sum(seqtab.nochim)/sum(seqtab)
+## download taxonmy
+dna <- DNAStringSet(getSequences(seqtab.nochim)) # Create a DNAStringSet from the ASVs
+load("C:/Users/Karen/Documents/Silva/SILVA_SSU_r138_2019.RData") # CHANGE TO THE PATH OF YOUR TRAINING SET
+# Match reads against reference sequencies
+ids <- IdTaxa(dna, trainingSet, strand="top", processors=NULL, verbose=TRUE, threshold = 0) # use all processors
+ranks <- c("domain", "phylum", "class", "order", "family", "genus", "species") # ranks of interest
+# Convert the output object of class "Taxa" to a matrix analogous to the output from assignTaxonomy
+taxid <- t(sapply(ids, function(x) {
+  m <- match(ranks, x$rank)
+  taxa <- x$taxon[m]
+  taxa[startsWith(taxa, "unclassified_")] <- NA
+  taxa
+}))
+colnames(taxid) <- ranks; rownames(taxid) <- getSequences(seqtab.nochim)
+# Extract matrix of confidence intervals 
+output <- t(sapply(ids, function(x) {
+  m <- match(ranks, x$rank)
+  confd <- x$confidence[m]
+  confd
+}))
+# Calculate average bootstrap value for domain - class
+BootClass <- sum(output[,1:3], na.rm=TRUE)/(3*Rich) 
+BootGenus <- sum(output[,1:6], na.rm=TRUE)/(6*Rich) 
+## name each data value
+SNRalgn <- c(try, t1, t2, t3, Rich, G12, H12, GH, NoChim, M12, BootClass, BootGenus)
+names(SNRalgn) <- c("try", "t1", "t2", "t3", "Rich", "G12", "H12", "Rep", "NoChim", "M12", "BootClass", "BootGenus")
+B = matrix(SNRalgn, nrow=12, ncol=1) 
+# add number of reads at processing
+E <- rbind(B,trackRun)
+D <- cbind(E, D)
+rownames(D) <- c("try", "t1", "t2", "t3", "Rich", "G12", "H12", "GH", "NoChim", "M12", "BootClass", "BootGenus", "input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim" )
+M12 <- max(D[12,])
+#saveRDS(D, "SalmonWildDada2.rds")
+# plot.default(D[1,], D[10,], xlab = "Try", ylab = "Duplicate")
+if (length(D) > 100) {break}
+}
+```
+
+## Plot progress and import file with larger number of iterations
+```{r}
+Dd <- as.data.frame(t(D))
+plot.default(Dd$try, Dd$M12, xlab = "try", ylab = "Max Duplicate")
+saveRDS(De, "DeSalW.rds")
+```
+
+## Export data to data frame and plot results
+```{r}
+Dc <- readRDS("DeSalW.rds")
+De <- rbind(Dd, Dc)
+De <- De[ which(De$Rich > 10),]
+plot.default(De$try, De$M12, xlab = "try", ylab = "Max Duplicate")
+```
+
+## Plot pairs
+```{r}
+n <- c(5,8,12,18)
+pairs(De[,n], pch = 19)
+```
+##Plot number of ASVs versus duplication rate
+```{r}
+plot.default(De$Rich, De$GH, xlab = "ASV", ylab = "Duplicate")
+```
+
+## Plot number of ASVs versus duplication rate
+```{r}
+plot.default(De$Rich, De$BootGenus, xlab = "ASV", ylab = "BootGenus")
+```
+
+##Plot duplication versus match to confidence of assignment to genus
+```{r}
+plot.default(De$BootGenus, De$GH, xlab = "Bootstrap values", ylab = "Duplication")
+```
+
+##plot.default(De$BootGenus, De$GH, xlab = "Bootstrap values", ylab = "Duplication")
+```{r}
+write.csv(as.matrix(t(De)), "DeSalW.csv")
+plot.default(De$nonchim, De$BootGenus, xlab = "reads", ylab = "Confidence")
+```
+
+##Select parameters
+```{r}
+DeFit <- De[ which(De$Rich > 100),] # set ASV mininum
+DeFit <- DeFit[order(-DeFit$GH, -DeFit$BootGenus),] # sort by fit
+t1 <- DeFit$t1[1]
+t2 <- DeFit$t2[1]
+t3 <- DeFit$t3[1]
+write.csv(as.matrix(t(DeFit)), "dadaFitSalW.csv")
+tDF <- c(DeFit$t3[1], DeFit$t1[1], DeFit$t2[1])
+names(tDF) <- c("trimLeft", "truncateLeft", "truncateRight")
+tDF = as.matrix(tDF, nrow=3, ncol=1) 
+colnames(tDF) <- c("parameter")
+tDF
+```

@@ -1,0 +1,80 @@
+---
+title: "Pike Farmed Data Biomformat"
+author: "Karen"
+date: '2022-05-09'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+## Install
+```{r}
+library(biomformat)
+packageVersion("biomformat")
+```
+```{r}
+library(phyloseq)
+packageVersion("biomformat")
+```
+
+
+## Import phyloseq object
+```{r}
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), 
+               sample_data(samdf), 
+               tax_table(taxid))
+ps <- prune_samples(sample_names(ps) != "Mock", ps) # Remove mock sample
+# rename
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+sample_names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+```
+
+## Convert phyloseq object to biom format
+```{r}
+otu <- t(as(otu_table(ps), "matrix"))
+head(otu)
+```
+
+## Convert phyloseq object to biom format
+```{r}
+otu_biomTemp <- make_biom(data=otu)
+as(biom_data(otu_biomTemp), "matrix")
+write_biom(otu_biomTemp,"PikeFarmed.biom")
+head(otu_biomTemp)
+plot(biom_data(otu_biomTemp))
+```
+
+## Export sequences from phyloseq object
+```{r}
+ps4ref <- as.data.frame(refseq(ps))
+ps4ref$name <- row.names(ps4ref)
+ps4ref$seq <- ps4ref$x
+ps5ref <- ps4ref[,2:3]
+writeFasta<-function(data, filename){
+  fastaLines = c()
+  for (rowNum in 1:nrow(data)){
+    fastaLines = c(fastaLines, as.character(paste(">", data[rowNum,"name"], sep = "")))
+    fastaLines = c(fastaLines,as.character(data[rowNum,"seq"]))
+  }
+  fileConn<-file(filename)
+  writeLines(fastaLines, fileConn)
+  close(fileConn)
+}
+writeFasta(ps5ref, "PikeFarmed.fna")
+head(ps5ref)
+```
+
+## Plot biom format
+```{r}
+heatmap(as(biom_data(otu_biomTemp), "matrix"))
+```
